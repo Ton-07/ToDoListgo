@@ -1,123 +1,130 @@
 package main
 
 import (
-	"errors"
+	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jedib0t/go-pretty/table"
 )
 
-// Add ==> ok
-// Remover ==> ok
-// validar se o index está dentro dos limites ==> ok
-// alternar o status de conclusão de uma tarefa.
-// método de edição
-//  método chamado print
+var DB *pgxpool.Pool
 
 type todo struct {
-	titulo     string
-	feito      bool
-	criado     time.Time
-	finalizado *time.Time
+	ID         int        `db:"id"`
+	Titulo     string     `db:"titulo"`
+	Feito      bool       `db:"feito"`
+	Criado     time.Time  `db:"criado_em"`
+	Finalizado *time.Time `db:"finalizado_em"`
 }
 
-type todos []todo // array do tipo todo
-
-func (ts *todos) add(titulo string) {
-	now := time.Now()
-	task := todo{
-		titulo:     titulo,
-		feito:      false,
-		criado:     now,
-		finalizado: nil,
+func BuscarTodos() ([]todo, error) {
+	rows, err := DB.Query(context.Background(), `
+		SELECT id, titulo, feito, criado_em, finalizado_em 
+		FROM todos 
+		ORDER BY criado_em ASC`)
+	if err != nil {
+		return nil, err
 	}
-	*ts = append(*ts, task)
+	defer rows.Close()
+
+	var lista []todo
+	for rows.Next() {
+		var t todo
+		err := rows.Scan(&t.ID, &t.Titulo, &t.Feito, &t.Criado, &t.Finalizado)
+		if err != nil {
+			return nil, err
+		}
+		lista = append(lista, t)
+	}
+	return lista, nil
 }
 
-// Precisamos verificar se o nosso index está dentro do limite do array
+func InserirTodo(titulo string) error {
+	_, err := DB.Exec(context.Background(), `INSERT INTO todos (titulo) VALUES ($1)`, titulo)
+	return err
+}
 
-func (list *todos) indexvalido(index int) error {
-
-	if index < 0 || index >= len(*list) {
-		err := errors.New("index inválido")
-		fmt.Println(err.Error())
+func RemoverTodo(posicaoVisual int) error {
+	todos, err := BuscarTodos()
+	if err != nil {
 		return err
 	}
 
-	return nil
+	if posicaoVisual < 1 || posicaoVisual > len(todos) {
+		return fmt.Errorf("posição inválida: %d", posicaoVisual)
+	}
 
+	id := todos[posicaoVisual-1].ID
+
+	cmdTag, err := DB.Exec(context.Background(), `DELETE FROM todos WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	if cmdTag.RowsAffected() == 0 {
+		return fmt.Errorf("tarefa com id %d não encontrada", id)
+	}
+	return nil
 }
 
-func (ts *todos) remover(index int) error {
-	t := *ts
-
-	if err := t.indexvalido(index); err != nil {
+func AlternarStatus(posicaoVisual int) error {
+	todos, err := BuscarTodos()
+	if err != nil {
 		return err
 	}
 
-	*ts = append(t[:index], t[index+1:]...)
-	return nil
-}
+	if posicaoVisual < 1 || posicaoVisual > len(todos) {
+		return fmt.Errorf("posição inválida: %d", posicaoVisual)
+	}
 
-func (ts *todos) alternarStatus(index int) error {
-	t := (*ts)
+	id := todos[posicaoVisual-1].ID
 
-	if err := t.indexvalido(index); err != nil {
+	var feito bool
+	err = DB.QueryRow(context.Background(), `SELECT feito FROM todos WHERE id = $1`, id).Scan(&feito)
+	if err != nil {
 		return err
 	}
 
-	// // Inverte o status 'feito' da tarefa
-
-	estaFeita := t[index].feito
-	if !estaFeita {
-		feitaem := time.Now()
-		t[index].finalizado = &feitaem
+	if !feito {
+		_, err = DB.Exec(context.Background(),
+			`UPDATE todos SET feito = true, finalizado_em = NOW() WHERE id = $1`, id)
+	} else {
+		_, err = DB.Exec(context.Background(),
+			`UPDATE todos SET feito = false, finalizado_em = NULL WHERE id = $1`, id)
 	}
-
-	t[index].feito = !estaFeita
-
-	return nil
-
+	return err
 }
 
-func (ts *todos) edit(index int, titulo string) error {
-	t := (*ts)
+func PrintTodos(todos []todo) {
+	sort.Slice(todos, func(i, j int) bool {
+		return todos[i].Criado.Before(todos[j].Criado)
+	})
 
-	if err := t.indexvalido(index); err != nil {
-		return err
-	}
-
-	// Editar o index
-	t[index].titulo = titulo
-
-	return nil
-
-}
-
-func (todos *todos) print() {
-	// table := table.New(os.Stdout)
 	tbl := table.NewWriter()
 	tbl.SetOutputMirror(os.Stdout)
-	tbl.AppendHeader(table.Row{"#", "Title", "Completed", "Created At", "Completed At"})
-	for index, t := range *todos {
+	tbl.AppendHeader(table.Row{"#", "Título", "Finalizada", "Criada em", "Concluída em"})
+	for index, t := range todos {
 		finalizada := "❌"
 		completedAt := ""
 
-		if t.feito {
+		if t.Feito {
 			finalizada = "✅"
-			if t.finalizado != nil {
-				completedAt = t.finalizado.Format(time.RFC1123)
+			if t.Finalizado != nil {
+				completedAt = t.Finalizado.Local().Format(time.RFC1123)
+
 			}
 		}
 
 		tbl.AppendRow(table.Row{
-			strconv.Itoa(index),
-			t.titulo,
+			strconv.Itoa(index + 1),
+			t.Titulo,
 			finalizada,
-			t.criado.Format(time.RFC1123),
+			t.Criado.Local().Format(time.RFC1123),
+			//t.Criado.Format(time.RFC1123),
 			completedAt,
 		})
 	}
