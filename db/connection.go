@@ -13,10 +13,11 @@ var DB *pgxpool.Pool
 
 func Conectar() error {
 	var err error
-	dsn := "postgres://ton:1234@localhost:5432/todolist"
+	dsn := "postgres://ton:1234@localhost:5433/todolist"
+
 	DB, err = pgxpool.New(context.Background(), dsn)
 	if err != nil {
-		return fmt.Errorf("erro ao conectar no banco: %d", err)
+		return fmt.Errorf("erro ao conectar no banco: %w", err)
 	}
 
 	return nil
